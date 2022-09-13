@@ -37,7 +37,7 @@ class Tasks(object):
 
 
     """
-    Init function. Loads a pre-baked JSON "DB" if it exists. Also starts an async poller that periodically looks for new versions of the tasks file.
+    Init function. Start an async poller that periodically looks for new versions of the tasks file.
     """
     def __init__(self, async_loop):
         self._active_tasks = {}                 # Holds all active user tasks. Task id (job.key) is the key
@@ -47,8 +47,8 @@ class Tasks(object):
         # self._zeebe_stub = gateway_pb2_grpc.GatewayStub(self._zeebe_channel)
 
     async def worker(self, vars):
-        userid = vars.get('userid',"")
-        if userid == "":
+        userid = vars.get('userid')
+        if not userid:
             return {'_DIGIT_ERROR':"Missing mandatory variable 'userid'"}
 
         task_key = vars.get('taskKey')
@@ -58,8 +58,8 @@ class Tasks(object):
                 workflow_id = vars.get('workflow_id')  # and/or specific workflows
 
                 found_tasks = []
-                for key, task in self._active_tasks.items():
-                    # task = self._active_tasks[key]
+                for key, taskitem in self._active_tasks.items():
+                    task = taskitem['task']
                     if task['assignee'] == userid and (not task_id or task_id == task['task_id']) and (not workflow_id or workflow_id == task['workflow_id']):
                         found_tasks.append({'taskKey': key, 'usertaskId': task['usertask_id'], 'workflowId': task['workflow_id']})     # Add task that matches
 
@@ -68,10 +68,9 @@ class Tasks(object):
             else:
                 if task_key not in self._active_tasks:
                     return {'_DIGIT_ERROR': f"Task with key {task_key} not found!"}
-                task = self._active_tasks[task_key]
-                if self._active_tasks[task_key]['assignee'] != userid:
+                task = self._active_tasks[task_key]['task']
+                if task['assignee'] != userid:
                     return {'_DIGIT_ERROR': f"User {userid} can't retrieve tasks assigned to {self._active_tasks[task_key]['assignee']}"}
-                task = self._active_tasks[task_key]
                 task_info = {
                     'taskKey': task_key,
                     'workflowId': task['workflow_id'],
@@ -89,8 +88,8 @@ class Tasks(object):
             return {'DIGIT_ERROR': f"Post task must have a task_key parameter!"}
         if task_key not in self._active_tasks:
             return {'DIGIT_ERROR': f"Task with key {task_key} not found!"}
-        if task_key not in self._active_tasks[task_key]['assignee'] != userid:
-            return {'DIGIT_ERROR': f"User {userid} can't complete tasks assigned to {self._active_tasks[task_key]['assignee']}"}
+        if task_key not in self._active_tasks[task_key]['task']['assignee'] != userid:
+            return {'DIGIT_ERROR': f"User {userid} can't complete tasks assigned to {self._active_tasks[task_key]['task']['assignee']}"}
 
         add_vars = vars['_JSON_BODY'] if '_JSON_BODY' in vars else '{}' # New variables to add to flow?
         async with grpc.aio.insecure_channel(ZEEBE_ADDRESS) as channel:
@@ -100,7 +99,7 @@ class Tasks(object):
                 await stub.CompleteJob(cjr)     # Do it!!!
                 logging.debug(f"Task {task_key} completed by {userid}")
                 if task_key in self._active_tasks:
-                    del self._active_tasks[task_key]      # Delete it from active task list. Would have been removed at the next collect_tasks loop.
+                    del self._active_tasks[task_key]      # Delete it from active task list.
             except grpc.aio.AioRpcError as grpc_error:
                 logging.fatal(f"Zeebe returned unexpected error: {grpc_error.code()}")
 
@@ -128,16 +127,15 @@ class Tasks(object):
             try:
                 while (True):
                     logging.debug(f"Looking for new tasks")
-                    active_tasks = {}
 
                     async for response in stub.ActivateJobs(ajr):   # Get all active user tasks
                         logging.debug(f"Found {len(response.jobs)} active user tasks")
                         for job in response.jobs:   # Loop through all returned user tasks
                             task = {
-                            'process_instance': job.processInstanceKey,
-                            'workflow_id': job.bpmnProcessId,
-                            'usertask_id': job.elementId,
-                            'task_variables': json.loads(job.customHeaders)
+                                'process_instance': job.processInstanceKey,
+                                'workflow_id': job.bpmnProcessId,
+                                'usertask_id': job.elementId,
+                                'task_variables': json.loads(job.customHeaders),
                             }
                             task['assignee'] = task['task_variables'].get('io.camunda.zeebe:assignee')
                             task['candidate_groups'] = task['task_variables'].get('io.camunda.zeebe:candidateGroups')
@@ -151,10 +149,10 @@ class Tasks(object):
                                     pass                # Skip other internal variables
                                 else:
                                     task['workflow_variables'][key] = value
-                            active_tasks[str(job.key)] = task   # Add it to the active_tasks list. Task key (a string) is the key
+                            self._active_tasks[str(job.key)] = {
+                                'timestamp': time.time(),
+                                'task': task }  # Add it to the active_tasks list. Task key (a string) is the key
                             logging.debug(f"Task {job.key} is assigned to {task['assignee']}")
-
-                    self._active_tasks = active_tasks     # Save it for global use
 
             except grpc.aio.AioRpcError as grpc_error:
                 logging.fatal(f"Zeebe returned unexpected error: {grpc_error.code()}")
