@@ -132,11 +132,11 @@ class Tasks(object):
                     async for response in stub.ActivateJobs(ajr):   # Get all active user tasks
                         logging.debug(f"Got {len(response.jobs)} user tasks to evaluate")
                         for job in response.jobs:   # Loop through all returned user tasks
-                            task_entry = self._active_tasks.get(str(job.key))     # Check if task i known
-                            if task_entry:      # Yes. Pick it up
-                                task = task_entry['task']
+                            taskitem = self._active_tasks.get(str(job.key))     # Check if task i known
+                            if taskitem:      # Yes. Pick it up
+                                task = taskitem['task']
                                 logging.debug(f"Found existing task {job.key} is assigned to {task['assignee']}")
-                            if not task_entry:    # No. Create it
+                            else:              # No. Create it
                                 task = {
                                     'process_instance': job.processInstanceKey,
                                     'workflow_id': job.bpmnProcessId,
