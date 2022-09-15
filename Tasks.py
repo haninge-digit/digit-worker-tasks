@@ -75,6 +75,7 @@ class Tasks(object):
                     'taskKey': task_key,
                     'workflowId': task['workflow_id'],
                     'usertaskId': task['usertask_id'],
+                    'created': task['created'],
                     'assignee': task['assignee'],
                     'candidateGroups': task['candidate_groups'],
                     'processInstance': str(task['process_instance']),
@@ -129,30 +130,39 @@ class Tasks(object):
                     logging.debug(f"Looking for new tasks")
 
                     async for response in stub.ActivateJobs(ajr):   # Get all active user tasks
-                        logging.debug(f"Found {len(response.jobs)} active user tasks")
+                        logging.debug(f"Got {len(response.jobs)} user tasks to evaluate")
                         for job in response.jobs:   # Loop through all returned user tasks
-                            task = {
-                                'process_instance': job.processInstanceKey,
-                                'workflow_id': job.bpmnProcessId,
-                                'usertask_id': job.elementId,
-                                'task_variables': json.loads(job.customHeaders),
-                            }
-                            task['assignee'] = task['task_variables'].get('io.camunda.zeebe:assignee')
-                            task['candidate_groups'] = task['task_variables'].get('io.camunda.zeebe:candidateGroups')
-                            task['workflow_variables'] = {}
-                            workflow_variables = json.loads(job.variables)
-                            for key, value in workflow_variables.items():
-                                if key == '_JSON_BODY':
-                                    jb = json.loads(value)
-                                    task['workflow_variables']['_JSON_BODY'] = {k:v for k,v in jb.items()}     # Unpack JSON body
-                                elif key[0] == '_':
-                                    pass                # Skip other internal variables
-                                else:
-                                    task['workflow_variables'][key] = value
+                            task_entry = self._active_tasks.get(str(job.key))     # Check if task i known
+                            if task_entry:      # Yes. Pick it up
+                                task = task_entry['task']
+                                logging.debug(f"Found existing task {job.key} is assigned to {task['assignee']}")
+                            if not task_entry:    # No. Create it
+                                task = {
+                                    'process_instance': job.processInstanceKey,
+                                    'workflow_id': job.bpmnProcessId,
+                                    'usertask_id': job.elementId,
+                                    'created':  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    'task_variables': json.loads(job.customHeaders),
+                                }
+                                task['assignee'] = task['task_variables'].get('io.camunda.zeebe:assignee')
+                                task['candidate_groups'] = task['task_variables'].get('io.camunda.zeebe:candidateGroups')
+                                task['workflow_variables'] = {}
+                                workflow_variables = json.loads(job.variables)
+                                for key, value in workflow_variables.items():
+                                    if key == '_JSON_BODY':
+                                        jb = json.loads(value)
+                                        task['workflow_variables']['_JSON_BODY'] = {k:v for k,v in jb.items()}     # Unpack JSON body
+                                    elif key[0] == '_':
+                                        pass                # Skip other internal variables
+                                    else:
+                                        task['workflow_variables'][key] = value
+                                logging.debug(f"New task {job.key} is assigned to {task['assignee']}")
+
                             self._active_tasks[str(job.key)] = {
-                                'timestamp': time.time(),
+                                'timestamp': time.time(),           # Add/Update with timestamp
                                 'task': task }  # Add it to the active_tasks list. Task key (a string) is the key
-                            logging.debug(f"Task {job.key} is assigned to {task['assignee']}")
+                            logging.debug(f"Have {len(self._active_tasks)} active tasks in list.")
+
 
             except grpc.aio.AioRpcError as grpc_error:
                 logging.fatal(f"Zeebe returned unexpected error: {grpc_error.code()}")
