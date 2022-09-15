@@ -85,11 +85,11 @@ class Tasks(object):
 
         # POST method completes the requested task with potential updated variables
         if not task_key:
-            return {'DIGIT_ERROR': f"Post task must have a task_key parameter!"}
+            return {'_DIGIT_ERROR': f"Post task must have a task_key parameter!"}
         if task_key not in self._active_tasks:
-            return {'DIGIT_ERROR': f"Task with key {task_key} not found!"}
+            return {'_DIGIT_ERROR': f"Task with key {task_key} not found!"}
         if task_key not in self._active_tasks[task_key]['task']['assignee'] != userid:
-            return {'DIGIT_ERROR': f"User {userid} can't complete tasks assigned to {self._active_tasks[task_key]['task']['assignee']}"}
+            return {'_DIGIT_ERROR': f"User {userid} can't complete tasks assigned to {self._active_tasks[task_key]['task']['assignee']}"}
 
         add_vars = vars['_JSON_BODY'] if '_JSON_BODY' in vars else '{}' # New variables to add to flow?
         async with grpc.aio.insecure_channel(ZEEBE_ADDRESS) as channel:
@@ -103,7 +103,7 @@ class Tasks(object):
             except grpc.aio.AioRpcError as grpc_error:
                 logging.fatal(f"Zeebe returned unexpected error: {grpc_error.code()}")
 
-        return "COMPLETED"
+        return {"status": f"User task {task_key} assigned to {userid} completed!"}
 
 
     """
