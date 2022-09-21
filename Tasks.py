@@ -1,3 +1,4 @@
+from multiprocessing import current_process
 import os
 import traceback
 import json
@@ -19,6 +20,8 @@ from zeebe_grpc.gateway_pb2 import (
 Environment
 """
 ZEEBE_ADDRESS = os.getenv('ZEEBE_ADDRESS',"camunda-zeebe-gateway.camunda-zeebe:26500")
+
+USER_TASK_RENEWAL_TIME = 5*60       # If a task hasn't been "renewed" with two minutes, it's assumed it has been deleted "out of bands"
 
 
 """
@@ -116,8 +119,8 @@ class Tasks(object):
 
         topic = "io.camunda.zeebe:userTask"     # Worker topic for all BPMN user tasks in Zeebe
         locktime = 1*60*1000                    # A too long time will create a delay on restarts (when task status is lost)
-        max_jobcnt = 10000                      # Can't be too many?
         max_poll_time = 2*60*1000               # Probaly "lagom". If less than locktime, poll will return after lock expires
+        max_jobcnt = 10000                      # Can't be too many?
         ajr = ActivateJobsRequest(type=topic, worker=worker_id,
                                   timeout=locktime,
                                   maxJobsToActivate=max_jobcnt,
@@ -131,11 +134,13 @@ class Tasks(object):
 
                     async for response in stub.ActivateJobs(ajr):   # Get all active user tasks
                         logging.debug(f"Got {len(response.jobs)} user tasks to evaluate")
+                        current_time = int(time.time())      # Used for timestamping
                         for job in response.jobs:   # Loop through all returned user tasks
                             taskitem = self._active_tasks.get(str(job.key))     # Check if task i known
-                            if taskitem:      # Yes. Pick it up
-                                task = taskitem['task']
-                                logging.debug(f"Found existing task {job.key} is assigned to {task['assignee']}")
+                            if taskitem:      # Yes
+                                assignee = taskitem['task']['assignee']
+                                self._active_tasks[str(job.key)]['timestamp'] = current_time           # Update timestamp
+                                logging.debug(f"Found existing task {job.key} that is assigned to {assignee}")
                             else:              # No. Create it
                                 task = {
                                     'process_instance': job.processInstanceKey,
@@ -156,13 +161,18 @@ class Tasks(object):
                                         pass                # Skip other internal variables
                                     else:
                                         task['workflow_variables'][key] = value
+                                self._active_tasks[str(job.key)] = {    # Add task to the active_tasks list. Task key (a string) is the key
+                                    'timestamp': current_time,      # Add timestamp
+                                    'task': task }                  
                                 logging.debug(f"New task {job.key} is assigned to {task['assignee']}")
 
-                            self._active_tasks[str(job.key)] = {
-                                'timestamp': time.time(),           # Add/Update with timestamp
-                                'task': task }  # Add it to the active_tasks list. Task key (a string) is the key
-                            logging.debug(f"Have {len(self._active_tasks)} active tasks in list.")
-
+                        logging.debug(f"Have {len(self._active_tasks)} active tasks in list.")
+                    
+                    current_time = int(time.time())
+                    for task_key in list(self._active_tasks.keys()):     # Check task list for tasks that have "disappeared" (probably deleted in Operator?)
+                        if self._active_tasks[task_key]['timestamp'] < current_time - USER_TASK_RENEWAL_TIME:       # Too old?
+                            del self._active_tasks[task_key]                # Yes. Delete it
+                            logging.error(f"Task with key {task_key} have disappeared?")
 
             except grpc.aio.AioRpcError as grpc_error:
                 logging.fatal(f"Zeebe returned unexpected error: {grpc_error.code()}")
