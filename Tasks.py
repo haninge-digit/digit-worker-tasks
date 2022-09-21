@@ -80,7 +80,7 @@ class Tasks(object):
                     'usertaskId': task['usertask_id'],
                     'created': task['created'],
                     'assignee': task['assignee'],
-                    'candidateGroups': task['candidate_groups'],
+                    'adminGroups': task['admin_groups'],
                     'processInstance': str(task['process_instance']),
                     # 'taskVariables': task['task_variables'],
                     'workflowVariables': task['workflow_variables']
@@ -150,7 +150,7 @@ class Tasks(object):
                                     'task_variables': json.loads(job.customHeaders),
                                 }
                                 task['assignee'] = task['task_variables'].get('io.camunda.zeebe:assignee')
-                                task['candidate_groups'] = task['task_variables'].get('io.camunda.zeebe:candidateGroups')
+                                task['admin_groups'] = json.loads(task['task_variables'].get('io.camunda.zeebe:candidateGroups'))
                                 task['workflow_variables'] = {}
                                 workflow_variables = json.loads(job.variables)
                                 for key, value in workflow_variables.items():
@@ -172,7 +172,7 @@ class Tasks(object):
                     for task_key in list(self._active_tasks.keys()):     # Check task list for tasks that have "disappeared" (probably deleted in Operator?)
                         if self._active_tasks[task_key]['timestamp'] < current_time - USER_TASK_RENEWAL_TIME:       # Too old?
                             del self._active_tasks[task_key]                # Yes. Delete it
-                            logging.error(f"Task with key {task_key} have disappeared?")
+                            logging.error(f"Task with key {task_key} has disappeared?")
 
             except grpc.aio.AioRpcError as grpc_error:
                 logging.fatal(f"Zeebe returned unexpected error: {grpc_error.code()}")
