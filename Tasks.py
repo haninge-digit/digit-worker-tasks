@@ -150,7 +150,7 @@ class Tasks(object):
                                     'task_variables': json.loads(job.customHeaders),
                                 }
                                 task['assignee'] = task['task_variables'].get('io.camunda.zeebe:assignee')
-                                task['admin_groups'] = json.loads(task['task_variables'].get('io.camunda.zeebe:candidateGroups'))
+                                task['admin_groups'] = json.loads(task['task_variables'].get('io.camunda.zeebe:candidateGroups')) if task['task_variables'].get('io.camunda.zeebe:candidateGroups') else []
                                 task['workflow_variables'] = {}
                                 workflow_variables = json.loads(job.variables)
                                 for key, value in workflow_variables.items():
