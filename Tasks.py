@@ -64,7 +64,7 @@ class Tasks(object):
                 for key, taskitem in self._active_tasks.items():
                     task = taskitem['task']
                     if task['assignee'] == userid and (not task_id or task_id == task['task_id']) and (not workflow_id or workflow_id == task['workflow_id']):
-                        found_tasks.append({'taskKey': key, 'usertaskId': task['usertask_id'], 'workflowId': task['workflow_id']})     # Add task that matches
+                        found_tasks.append({'taskKey': key, 'usertaskId': task['usertask_id'], 'workflowId': task['workflow_id'], 'created': task['created']})     # Add task that matches
 
                 return {'tasks': found_tasks}    # Return the list. Can be empty.
 
@@ -149,8 +149,9 @@ class Tasks(object):
                                     'created':  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                     'task_variables': json.loads(job.customHeaders),
                                 }
-                                task['assignee'] = task['task_variables'].get('io.camunda.zeebe:assignee')
-                                task['admin_groups'] = json.loads(task['task_variables'].get('io.camunda.zeebe:candidateGroups')) if task['task_variables'].get('io.camunda.zeebe:candidateGroups') else []
+                                task['assignee'] = task['task_variables'].get('io.camunda.zeebe:assignee')      # ToDo: Check if empty = fatal error!
+                                candidate_groups = task['task_variables'].get('io.camunda.zeebe:candidateGroups')
+                                task['admin_groups'] = json.loads(candidate_groups) if candidate_groups else []     # Can be empty = No admin groups...
                                 task['workflow_variables'] = {}
                                 workflow_variables = json.loads(job.variables)
                                 for key, value in workflow_variables.items():
