@@ -1,6 +1,6 @@
 # The next three are for Zeebe communication
 zeebe-grpc>=8.0.4,<8.1.0
-grpcio>=1.50,<1.51
+grpcio>=1.50,<1.52
 Jinja2>=3.1.2,<3.2.0
 
 # And this one is for the http server. Skip if not used (smaller image)
