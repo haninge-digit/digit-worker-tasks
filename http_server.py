@@ -1,6 +1,6 @@
 import os
-import logging
 import json
+import logging
 
 from aiohttp import web
 
@@ -22,13 +22,11 @@ async def http_handler(request):
     if request.can_read_body and request.content_type == 'application/json':
         query_args['_JSON_BODY'] = json.dumps(await request.json())
     query_args['_STANDALONE'] = ""
-
-
-    worker = request.app['WORKER']      # Get worker refeence
+    
+    worker = request.app['WORKER']      # Get worker reference
     resp = await worker(query_args)     # Run the worker
     
     return web.json_response(resp)      # Return the result
-
 
 
 async def http_server(worker):
@@ -54,4 +52,4 @@ async def http_server(worker):
     site = web.TCPSite(runner, port=HTTP_SERVER_PORT)
     await site.start()
 
-    return runner
+    return site
