@@ -85,7 +85,15 @@ class Tasks(object):
                     if (role and 
                         (not task_id or task_id == task['task_id']) and 
                         (not workflow_id or workflow_id == task['workflow_id'])):
-                        found_tasks.append({'taskKey': key, 'usertaskId': task['usertask_id'], 'workflowId': task['workflow_id'], 'created': task['created'], 'role':role})     # Add task that matches
+                        task_info = {
+                            'taskKey': key,
+                            'workflowId': task['workflow_id'],
+                            'usertaskId': task['usertask_id'],
+                            'processInstance': str(task['process_instance']),
+                            'created': task['created'],
+                            'role':role
+                        }
+                        found_tasks.append(task_info)     # Add tasks that matches
 
                 return {'tasks': found_tasks}    # Return the list. Can be empty.
 
@@ -100,12 +108,12 @@ class Tasks(object):
                     'taskKey': task_key,
                     'workflowId': task['workflow_id'],
                     'usertaskId': task['usertask_id'],
+                    'processInstance': str(task['process_instance']),
                     'created': task['created'],
                     'assignee': task['assignee'],
                     'originator': task['originator'],
                     'adminGroups': task['admin_groups'],
                     'role': role,
-                    'processInstance': str(task['process_instance']),
                     # 'taskVariables': task['task_variables'],
                     'workflowVariables': task['workflow_variables']
                 }
