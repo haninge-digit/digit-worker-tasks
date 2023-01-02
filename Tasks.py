@@ -5,11 +5,12 @@ import json
 import logging
 import asyncio
 import uuid
-from io import BytesIO
+import re
 
 from datetime import datetime
 import time
 
+import httpx
 import grpc
 from zeebe_grpc import gateway_pb2_grpc
 from zeebe_grpc.gateway_pb2 import (
@@ -20,6 +21,7 @@ from zeebe_grpc.gateway_pb2 import (
 Environment
 """
 ZEEBE_ADDRESS = os.getenv('ZEEBE_ADDRESS',"camunda-zeebe-gateway.camunda-zeebe:26500")
+USERINFOCASH = os.getenv('USERINFOCASH',"userinfocash:8080") # This is the default
 
 USER_TASK_RENEWAL_TIME = 5*60       # If a task hasn't been "renewed" with two minutes, it's assumed it has been deleted "out of bands"
 
@@ -42,37 +44,57 @@ class Tasks(object):
     """
     Init function. Start an async poller that periodically looks for new versions of the tasks file.
     """
-    def __init__(self, async_loop):
+    def __init__(self):
         self._active_tasks = {}                 # Holds all active user tasks. Task id (job.key) is the key
-        self._collect_coroutine = async_loop.create_task(self._collect_tasks())       # Create the task collector
+        # async_loop = asyncio.get_running_loop()
+        self._collect_coroutine = asyncio.create_task(self._collect_tasks())       # Create the task collector
 
         # self._zeebe_channel = grpc.aio.insecure_channel(ZEEBE_ADDRESS)
         # self._zeebe_stub = gateway_pb2_grpc.GatewayStub(self._zeebe_channel)
 
     async def worker(self, vars):
+        stand_alone = '_STANDALONE' in vars     # This worker should always be "stand alone"
+
         userid = vars.get('userid')
         if not userid:
             return {'_DIGIT_ERROR':"Missing mandatory variable 'userid'"}
 
+        if re.match("^\S{6}\d{2}$", userid):    # If an internal user. Get all groups to validate admin access
+            async with httpx.AsyncClient(timeout=10, verify=False) as client:       # Get all groups the user belongs to
+                try:
+                    r = await client.get(f"http://{USERINFOCASH}/userinfo/{userid}")
+                except httpx.ConnectError:
+                    return {'_DIGIT_ERROR':f"Couldn't connect to {USERINFOCASH} server"}
+                if r.status_code != 200:
+                    return {'_DIGIT_ERROR':f"GET userinfocash returned status code {r.status_code}"}
+            userinfo = r.json()
+            usergroups = userinfo.get('userGroups',[])
+        else:
+            usergroups = []
+
         task_key = vars.get('taskKey')
         if vars['_HTTP_METHOD'] == "GET":
-            if not task_key:             # A list of all tasks for a user is requested
+            if not task_key:             # A list of all tasks that the user has access to, is requested
                 task_id = vars.get('task_id')          # Filter on specifik tasks
                 workflow_id = vars.get('workflow_id')  # and/or specific workflows
 
                 found_tasks = []
                 for key, taskitem in self._active_tasks.items():
                     task = taskitem['task']
-                    if task['assignee'] == userid and (not task_id or task_id == task['task_id']) and (not workflow_id or workflow_id == task['workflow_id']):
-                        found_tasks.append({'taskKey': key, 'usertaskId': task['usertask_id'], 'workflowId': task['workflow_id'], 'created': task['created']})     # Add task that matches
+                    role = self._get_role(task, userid, usergroups)
+                    if (role and 
+                        (not task_id or task_id == task['task_id']) and 
+                        (not workflow_id or workflow_id == task['workflow_id'])):
+                        found_tasks.append({'taskKey': key, 'usertaskId': task['usertask_id'], 'workflowId': task['workflow_id'], 'created': task['created'], 'role':role})     # Add task that matches
 
                 return {'tasks': found_tasks}    # Return the list. Can be empty.
 
-            else:
+            else:    # A taskKey is given. Return all information about that specific task
                 if task_key not in self._active_tasks:
                     return {'_DIGIT_ERROR': f"Task with key {task_key} not found!"}
                 task = self._active_tasks[task_key]['task']
-                if task['assignee'] != userid:
+                role = self._get_role(task, userid, usergroups)
+                if not role:      # ToDo: Check for initiator ans admin access
                     return {'_DIGIT_ERROR': f"User {userid} can't retrieve tasks assigned to {self._active_tasks[task_key]['assignee']}"}
                 task_info = {
                     'taskKey': task_key,
@@ -80,7 +102,9 @@ class Tasks(object):
                     'usertaskId': task['usertask_id'],
                     'created': task['created'],
                     'assignee': task['assignee'],
+                    'originator': task['originator'],
                     'adminGroups': task['admin_groups'],
+                    'role': role,
                     'processInstance': str(task['process_instance']),
                     # 'taskVariables': task['task_variables'],
                     'workflowVariables': task['workflow_variables']
@@ -109,6 +133,16 @@ class Tasks(object):
 
         return {"status": f"User task {task_key} assigned to {userid} completed!"}
 
+    def _get_role(self,task, userid, usergroups):
+        if task['assignee'] == userid:
+            return "assignee"
+        elif task['originator'] == userid:
+            return "originator"
+        # elif not set(task['admin_groups']).isdisjoint(usergroups):
+        elif any(group in usergroups for group in task['admin_groups']):    # Does the user belong to any of the admin groups?
+            return "admin"
+        else:
+            return ""        
 
     """
     Asynchronous task that periodically collects active tasks from Camunda
@@ -154,6 +188,7 @@ class Tasks(object):
                                 task['admin_groups'] = json.loads(candidate_groups) if candidate_groups else []     # Can be empty = No admin groups...
                                 task['workflow_variables'] = {}
                                 workflow_variables = json.loads(job.variables)
+                                task['originator'] = workflow_variables.get('userid',"")        # Set userid as originator
                                 for key, value in workflow_variables.items():
                                     if key == '_JSON_BODY':
                                         jb = json.loads(value)
