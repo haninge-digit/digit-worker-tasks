@@ -77,12 +77,14 @@ class Tasks(object):
             if not task_key:             # A list of all tasks that the user has access to, is requested
                 task_id = vars.get('task_id')          # Filter on specifik tasks
                 workflow_id = vars.get('workflow_id')  # and/or specific workflows
+                role_type = vars.get('role_type')      # and/or specific role
 
                 found_tasks = []
                 for key, taskitem in self._active_tasks.items():
                     task = taskitem['task']
                     role = self._get_role(task, userid, usergroups)
                     if (role and 
+                        (not role_type or role_type == role) and 
                         (not task_id or task_id == task['task_id']) and 
                         (not workflow_id or workflow_id == task['workflow_id'])):
                         task_info = {
@@ -102,7 +104,7 @@ class Tasks(object):
                     return {'_DIGIT_ERROR': f"Task with key {task_key} not found!"}
                 task = self._active_tasks[task_key]['task']
                 role = self._get_role(task, userid, usergroups)
-                if not role:      # ToDo: Check for initiator ans admin access
+                if not role:        # No access allowed!
                     return {'_DIGIT_ERROR': f"User {userid} can't retrieve tasks assigned to {self._active_tasks[task_key]['assignee']}"}
                 task_info = {
                     'taskKey': task_key,
