@@ -102,7 +102,7 @@ Asynchronous function that calls the worker function and completes the job
 Can be more than one of these running
 """
 async def run_worker(workfunc, job, worker_id, stub):
-    logging.info(f"Got a task to do.  TaskID={job.key}, ProcessID={job.bpmnProcessId}, ProcessInstance={job.processInstanceKey}, ElementID={job.elementId}, ElementInstance={job.elementInstanceKey}")
+    logging.info(f"Got a job to do.  JobID={job.key}, ProcessID={job.bpmnProcessId}, ProcessInstance={job.processInstanceKey}, ElementID={job.elementId}, ElementInstance={job.elementInstanceKey}")
     logging.debug(f"Retries: {job.retries}  Deadline: {job.deadline}  Custom:{job.customHeaders}")
     if job.retries == 0:
         logging.error(f"Got a canceled job?")       # Don't know why these jobs are active?
@@ -114,12 +114,12 @@ async def run_worker(workfunc, job, worker_id, stub):
         newvars = await workfunc(vars|worker_vars)    # Do the work and get new variables in return
 
         await stub.CompleteJob(CompleteJobRequest(jobKey=job.key, variables=json.dumps(newvars)))   # Mark tas as completed and with new variables
-        logging.info(f"Task marked as complete. TaskID={job.key}")
+        logging.info(f"Job marked as complete. JobID={job.key}")
 
     except WorkerError as e:    # Worker signals some error. Could be temporary (e.retries > 0)
         if e.retries < 0:
             e.retries = job.retries-1       # Decrease the number of allowed retries (set in BPMN)
-        logging.error(f"TaskID {job.key} failed with \" {e.errorMessage}\".  Retrying {e.retries} times more.")
+        logging.error(f"JobID {job.key} failed with \" {e.errorMessage}\".  Retrying {e.retries} times more.")
         try:
             await stub.FailJob(FailJobRequest(jobKey=job.key, retries=e.retries, errorMessage=e.errorMessage, retryBackOff=e.retryTimeout)) 
         except grpc.aio.AioRpcError as grpc_error:      # This is no good...  :(
