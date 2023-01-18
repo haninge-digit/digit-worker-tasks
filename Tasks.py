@@ -15,7 +15,8 @@ import grpc
 from zeebe_grpc import gateway_pb2_grpc
 from zeebe_grpc.gateway_pb2 import (
     ActivateJobsRequest,
-    CompleteJobRequest)
+    CompleteJobRequest,
+    SetVariablesRequest)
 
 """ 
 Environment
@@ -23,7 +24,7 @@ Environment
 ZEEBE_ADDRESS = os.getenv('ZEEBE_ADDRESS',"camunda-zeebe-gateway.camunda-zeebe:26500")
 USERINFOCASH = os.getenv('USERINFOCASH',"userinfocash:8080") # This is the default
 
-USER_TASK_RENEWAL_TIME = 5*60       # If a task hasn't been "renewed" with two minutes, it's assumed it has been deleted "out of bands"
+USER_TASK_RENEWAL_TIME = 2*60       # If a task hasn't been "renewed" with two minutes, it's assumed it has been deleted "out of bands"
 
 
 """
@@ -58,6 +59,7 @@ class Tasks(object):
         userid = vars.get('userid')
         if not userid:
             return {'_DIGIT_ERROR':"Missing mandatory variable 'userid'"}
+        task_key = vars.get('taskKey')
 
         if re.match("^\S{6}\d{2}$", userid):    # If an internal user. Get all groups to validate admin access
             async with httpx.AsyncClient(timeout=10, verify=False) as client:       # Get all groups the user belongs to
@@ -72,12 +74,12 @@ class Tasks(object):
         else:
             usergroups = []
 
-        task_key = vars.get('taskKey')
+        # GET method returns information about active tasks. Filters are possible
         if vars['_HTTP_METHOD'] == "GET":
             if not task_key:             # A list of all tasks that the user has access to, is requested
-                task_id = vars.get('task_id')          # Filter on specifik tasks
-                workflow_id = vars.get('workflow_id')  # and/or specific workflows
-                role_type = vars.get('role_type')      # and/or specific role
+                usertask_id = vars.get('usertask')          # Filter on specifik tasks
+                workflow_id = vars.get('workflow')  # and/or specific workflows
+                role_type = vars.get('role')      # and/or specific role
 
                 found_tasks = []
                 for key, taskitem in self._active_tasks.items():
@@ -85,7 +87,7 @@ class Tasks(object):
                     role = self._get_role(task, userid, usergroups)
                     if (role and 
                         (not role_type or role_type == role) and 
-                        (not task_id or task_id == task['task_id']) and 
+                        (not usertask_id or usertask_id == task['usertask_id']) and 
                         (not workflow_id or workflow_id == task['workflow_id'])):
                         task_info = {
                             'taskKey': key,
@@ -99,49 +101,90 @@ class Tasks(object):
 
                 return {'tasks': found_tasks}    # Return the list. Can be empty.
 
-            else:    # A taskKey is given. Return all information about that specific task
+            else:    # A taskKey is given. Return more information about that specific task
                 if task_key not in self._active_tasks:
                     return {'_DIGIT_ERROR': f"Task with key {task_key} not found!"}
                 task = self._active_tasks[task_key]['task']
                 role = self._get_role(task, userid, usergroups)
                 if not role:        # No access allowed!
                     return {'_DIGIT_ERROR': f"User {userid} can't retrieve tasks assigned to {self._active_tasks[task_key]['assignee']}"}
-                task_info = {
-                    'taskKey': task_key,
-                    'workflowId': task['workflow_id'],
-                    'usertaskId': task['usertask_id'],
-                    'processInstance': str(task['process_instance']),
-                    'created': task['created'],
-                    'assignee': task['assignee'],
-                    'originator': task['originator'],
-                    'adminGroups': task['admin_groups'],
-                    'role': role,
-                    # 'taskVariables': task['task_variables'],
-                    'workflowVariables': task['workflow_variables']
-                }
-                return {'taskInfo': task_info}                    # Return information about a specific task.
 
-        # POST method completes the requested task with potential updated variables
-        if not task_key:
-            return {'_DIGIT_ERROR': f"Post task must have a task_key parameter!"}
-        if task_key not in self._active_tasks:
-            return {'_DIGIT_ERROR': f"Task with key {task_key} not found!"}
-        if task_key not in self._active_tasks[task_key]['task']['assignee'] != userid:
-            return {'_DIGIT_ERROR': f"User {userid} can't complete tasks assigned to {self._active_tasks[task_key]['task']['assignee']}"}
+                if role != "admin":         # If not Admin, return only the form data (_JSON_BODY)
+                    return task['workflow_variables'].get('_JSON_BODY',{})
+                else:                       # Return what we have
+                    task_info = {
+                        'taskKey': task_key,
+                        'workflowId': task['workflow_id'],
+                        'usertaskId': task['usertask_id'],
+                        'processInstance': str(task['process_instance']),
+                        'created': task['created'],
+                        'assignee': task['assignee'],
+                        'originator': task['originator'],
+                        'adminGroups': task['admin_groups'],
+                        'role': role,
+                        # 'taskVariables': task['task_variables'],
+                        'workflowVariables': task['workflow_variables']
+                    }
+                    return {'taskInfo': task_info}                    # Return information about a specific task.
 
-        add_vars = vars['_JSON_BODY'] if '_JSON_BODY' in vars else '{}' # New variables to add to flow?
-        async with grpc.aio.insecure_channel(ZEEBE_ADDRESS) as channel:
-            stub = gateway_pb2_grpc.GatewayStub(channel)
-            try:
-                cjr = CompleteJobRequest(jobKey=int(task_key), variables=add_vars)   # Complete task with possibly added variables
-                await stub.CompleteJob(cjr)     # Do it!!!
-                logging.debug(f"Task {task_key} completed by {userid}")
-                if task_key in self._active_tasks:
-                    del self._active_tasks[task_key]      # Delete it from active task list.
-            except grpc.aio.AioRpcError as grpc_error:
-                logging.fatal(f"Zeebe returned unexpected error: {grpc_error.code()}")
+        # PATCH method updates the original _JSON_BODY
+        if vars['_HTTP_METHOD'] == "PATCH":
+            if not task_key:
+                return {'_DIGIT_ERROR': f"PATCH task must have a task_key parameter!"}
+            if task_key not in self._active_tasks:
+                return {'_DIGIT_ERROR': f"Task with key {task_key} not found!"}
+            if task_key not in self._active_tasks[task_key]['task']['assignee'] != userid:
+                return {'_DIGIT_ERROR': f"User {userid} can't update tasks assigned to {self._active_tasks[task_key]['task']['assignee']}"}
+            update_vars = vars.get('_JSON_BODY')
+            if not update_vars:
+                return {'_DIGIT_ERROR': f"Need a JSON body in PATCH"}
 
-        return {"status": f"User task {task_key} assigned to {userid} completed!"}
+            task = self._active_tasks[task_key]['task']
+            jbody = task['workflow_variables'].get('_JSON_BODY',{}) | json.loads(update_vars)       # Merge new data into a new JSON
+            new_jbody = json.dumps({'_JSON_BODY': json.dumps(jbody)})       # JSON encode both the JSON_BODY and the resulting variable that is passed in the call
+
+            element_instance = task['element_instance']
+            async with grpc.aio.insecure_channel(ZEEBE_ADDRESS) as channel:
+                stub = gateway_pb2_grpc.GatewayStub(channel)
+                try:
+                    cjr = SetVariablesRequest(elementInstanceKey=element_instance, variables=new_jbody, local=False)   # Complete task with possibly added variables
+                    await stub.SetVariables(cjr)     # Do it!!!
+                    logging.debug(f"Task {task_key} variables updated by {userid}")
+                    task['workflow_variables']['_JSON_BODY'] = jbody        # Update local store
+                except grpc.aio.AioRpcError as grpc_error:
+                    logg_text = f"Zeebe returned unexpected error: {grpc_error.code()}"
+                    logging.fatal(logg_text)
+                    return {'_DIGIT_ERROR': logg_text}
+
+            return {"status": f"User task {task_key} updated with new variables!"}
+
+        # POST method completes the requested task with potential updated workflow variables
+        if vars['_HTTP_METHOD'] == "POST":
+            if not task_key:
+                return {'_DIGIT_ERROR': f"POST task must have a task_key parameter!"}
+            if task_key not in self._active_tasks:
+                return {'_DIGIT_ERROR': f"Task with key {task_key} not found!"}
+            if task_key not in self._active_tasks[task_key]['task']['assignee'] != userid:
+                return {'_DIGIT_ERROR': f"User {userid} can't complete tasks assigned to {self._active_tasks[task_key]['task']['assignee']}"}
+
+            add_vars = vars.get('_JSON_BODY',{})            # New variables to add to flow?
+            async with grpc.aio.insecure_channel(ZEEBE_ADDRESS) as channel:
+                stub = gateway_pb2_grpc.GatewayStub(channel)
+                try:
+                    cjr = CompleteJobRequest(jobKey=int(task_key), variables=add_vars)   # Complete task with possibly added variables
+                    await stub.CompleteJob(cjr)     # Do it!!!
+                    logging.debug(f"Task {task_key} completed by {userid}")
+                    if task_key in self._active_tasks:
+                        del self._active_tasks[task_key]      # Delete it from active task list.
+                except grpc.aio.AioRpcError as grpc_error:
+                    logg_text = f"Zeebe returned unexpected error: {grpc_error.code()}"
+                    logging.fatal(logg_text)
+                    return {'_DIGIT_ERROR': logg_text}
+
+            return {"status": f"User task {task_key} assigned to {userid} completed!"}
+
+        return {'_DIGIT_ERROR': f"Illegal HTTP-method = {vars['_HTTP_METHOD']}"}
+
 
     def _get_role(self,task, userid, usergroups):
         if task['assignee'] == userid:
@@ -190,6 +233,7 @@ class Tasks(object):
                                     'process_instance': job.processInstanceKey,
                                     'workflow_id': job.bpmnProcessId,
                                     'usertask_id': job.elementId,
+                                    'element_instance': job.elementInstanceKey,
                                     'created':  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                     'task_variables': json.loads(job.customHeaders),
                                 }
@@ -202,7 +246,7 @@ class Tasks(object):
                                 for key, value in workflow_variables.items():
                                     if key == '_JSON_BODY':
                                         jb = json.loads(value)
-                                        task['workflow_variables']['_JSON_BODY'] = {k:v for k,v in jb.items()}     # Unpack JSON body
+                                        task['workflow_variables']['_JSON_BODY'] = {k:v for k,v in jb.items()}     # Unpack JSON body ToDo: Find out why I do it this way
                                     elif key[0] == '_':
                                         pass                # Skip other internal variables
                                     else:
@@ -225,4 +269,4 @@ class Tasks(object):
             except Exception as e:      # Catch the rest # noqa: F841
                 logging.fatal(traceback.format_exc(limit=2))
 
-        # logging.info("collect_tasks stopped!")
+        logging.fatal("collect_tasks terminated!")
