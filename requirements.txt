@@ -1,6 +1,6 @@
 # The next three are for Zeebe communication
 zeebe-grpc>=8.0.4,<8.1.0
-grpcio>=1.50,<1.52
+grpcio>=1.50,<1.54
 Jinja2>=3.1.2,<3.2.0
 
 # This one for quering user info cash
